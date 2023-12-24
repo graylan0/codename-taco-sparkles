@@ -70,7 +70,7 @@ Contributions are like comets, dazzling and welcome! If you wish to contribute, 
 
 ## License 📜
 
-_Codename Taco Sparkles_ is released under the MIT License. Feel free to explore, modify, and distribute it as you journey through the coding cosmos.
+_Codename Taco Sparkles_ is released under the GPL2. Feel free to explore, modify, and distribute it as you journey through the coding cosmos.
 
 ## Final Thoughts 💭
 
