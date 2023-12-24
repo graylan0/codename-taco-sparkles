@@ -82,6 +82,6 @@ Remember, in the vast expanse of the coding universe, you're not just a programm
 
 ---
 
-![Astronaut Tacos](https://example.com/astronaut_tacos_meme.jpg)
+
 
 *“To the stars on the wings of a taco.” - Carl Sagan, probably* 🌮🌠
