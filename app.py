@@ -1,5 +1,6 @@
 import eel
 import asyncio
+import threading
 import re
 import speech_recognition as sr
 import logging
@@ -10,24 +11,39 @@ from weaviate.embedded import EmbeddedOptions
 from os import path
 import weaviate
 import nltk
+from nltk.data import find
 import spacy
 from collections import Counter
 
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
-nltk.download('stopwords')
-nlp = spacy.load("en_core_web_sm")
+executor = ThreadPoolExecutor(max_workers=5)
+
+def download_nltk_data():
+    try:
+        find('tokenizers/punkt')
+        find('taggers/averaged_perceptron_tagger')
+        find('corpora/stopwords')
+    except LookupError:
+        nltk.download('punkt')
+        nltk.download('averaged_perceptron_tagger')
+        nltk.download('stopwords')
+
+def load_spacy_model():
+    global nlp
+    nlp = spacy.load("en_core_web_sm")
+
+executor.submit(download_nltk_data)
+executor.submit(load_spacy_model)
 
 client = weaviate.Client(embedded_options=EmbeddedOptions())
+
 bundle_dir = path.abspath(path.dirname(__file__))
 model_path = path.join(bundle_dir, 'llama-2-7b-chat.ggmlv3.q8_0.bin')
 llm = Llama(model_path=model_path, n_gpu_layers=-1, n_ctx=3900)
+
 recognizer = sr.Recognizer()
 mic = sr.Microphone()
 
-eel.init('web')
 logging.basicConfig(level=logging.DEBUG)
-executor = ThreadPoolExecutor(max_workers=5)
 
 is_listening = False
 
@@ -54,7 +70,6 @@ def determine_token(chunk, max_words_to_check=100):
         return "[general]"
 
 def advanced_semantic_chunk_text(text, max_chunk_size=100):
-    logging.debug("Starting advanced semantic chunking.")
     doc = nlp(text)
     chunks = []
     current_chunk = []
@@ -78,27 +93,21 @@ def advanced_semantic_chunk_text(text, max_chunk_size=100):
             current_length = 0
     if current_chunk:
         chunks.append(" ".join(current_chunk))
-    logging.debug("Completed advanced semantic chunking.")
     return chunks
 
 async def fetch_data_from_duckduckgo(query, max_results=5):
-    logging.debug(f"Fetching data from DuckDuckGo for query: {query}")
     try:
         with ddg() as ddgs:
             results = [r for r in ddgs.text(query, max_results=max_results)]
-        logging.debug("Data fetched successfully from DuckDuckGo.")
         return results
     except Exception as e:
-        logging.error(f"Error fetching data from DuckDuckGo: {e}")
         return []
 
 def extract_keywords_with_spacy(text):
-    logging.debug("Extracting keywords using SpaCy.")
     doc = nlp(text)
     return [token.lemma_ for token in doc if token.is_stop == False and token.is_punct == False]
 
 async def update_weaviate_with_ddg_data(query):
-    logging.debug(f"Updating Weaviate with data for query: {query}")
     ddg_results = await fetch_data_from_duckduckgo(query)
     ddg_text = ' '.join(ddg_results)
     extracted_keywords = extract_keywords_with_spacy(ddg_text)
@@ -109,12 +118,10 @@ async def update_weaviate_with_ddg_data(query):
         }
         try:
             client.data_object.create(idea_entry, "ideas")
-            logging.debug(f"Weaviate updated with keyword: {keyword}")
         except Exception as e:
-            logging.error(f"Error updating Weaviate with DDG data: {e}")
+            pass
 
 async def query_weaviate_for_ideas(keywords):
-    logging.debug(f"Querying Weaviate for ideas with keywords: {keywords}")
     ddg_results = await fetch_data_from_duckduckgo(" ".join(keywords))
     ddg_text = ' '.join(ddg_results)
     additional_keywords = extract_keywords_with_spacy(ddg_text)
@@ -136,21 +143,17 @@ async def query_weaviate_for_ideas(keywords):
             .with_where(query)
             .do()
         )
-        logging.debug("Weaviate query executed successfully.")
         return results['data']['Get']['ideas'] if 'data' in results and 'Get' in results['data'] else []
     except Exception as e:
-        logging.error(f"Error querying Weaviate: {e}")
         return []
 
 @eel.expose
 async def set_speech_recognition_state(state):
     global is_listening
     is_listening = state
-    logging.debug(f"Speech recognition state set to: {state}")
 
 async def continuous_speech_recognition():
     global is_listening
-    logging.debug("Starting continuous speech recognition.")
     while True:
         if is_listening:
             try:
@@ -164,23 +167,19 @@ async def continuous_speech_recognition():
                 continue
             except Exception as e:
                 eel.update_chat_box(f"An error occurred: {e}")
-                logging.error(f"Error in continuous speech recognition: {e}")
         else:
             await asyncio.sleep(1)
 
 def audio_to_text(audio_data):
     try:
         text = recognizer.recognize_google(audio_data)
-        logging.debug(f"Converted audio to text: {text}")
         return text
     except sr.UnknownValueError:
         return "Could not understand audio"
     except sr.RequestError as e:
-        logging.error(f"Request error in speech recognition: {e}")
         return f"Request error: {e}"
 
 async def run_llm(prompt):
-    logging.debug(f"Running Llama model with prompt: {prompt}")
     keywords = extract_keywords_with_spacy(prompt)
     await update_weaviate_with_ddg_data(" ".join(keywords))
     recommended_ideas = await query_weaviate_for_ideas(keywords)
@@ -188,18 +187,25 @@ async def run_llm(prompt):
     query_prompt = f"User:'{prompt}'. Ideas: {ideas_recommendations}"
     full_prompt = query_prompt
     response = llm(full_prompt, max_tokens=900)['choices'][0]['text']
-    logging.debug(f"Llama model response: {response}")
     return response
 
 @eel.expose
 def send_message_to_llama(message):
-    logging.debug(f"Received message for Llama: {message}")
     response = asyncio.run(run_llm(message))
     return response
 
+def start_eel():
+    eel.init('web')
+    eel.start('index.html', mode='custom', block=False)
+
+async def run_eel_loop():
+    loop = asyncio.get_event_loop()
+    eel_loop = threading.Thread(target=start_eel)
+    eel_loop.start()
+    while not eel._websockets:
+        await asyncio.sleep(0.1)
+
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    logging.debug("Starting main application.")
+    asyncio.run(run_eel_loop())
     asyncio.run(continuous_speech_recognition())
-    eel.start('index.html')
+
